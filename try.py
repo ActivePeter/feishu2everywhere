@@ -5,7 +5,12 @@ from selenium.webdriver.common.actions.wheel_input import ScrollOrigin
 import time
 import base64
 
-driver = webdriver.Chrome()
+options = webdriver.ChromeOptions()
+options.add_argument("--disk-cache-size=0")
+options.add_argument("--media-cache-size=0")
+options.add_argument("--disable-gpu-shader-disk-cache")
+options.add_argument(f"--user-data-dir=./user")
+driver = webdriver.Chrome(options=options)
 
 #设置窗口高度20000
 # driver.set_window_size(1000, 20000)
