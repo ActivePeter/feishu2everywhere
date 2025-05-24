@@ -18,12 +18,102 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use async_recursion::async_recursion;
 use base64::{Engine as _, engine::general_purpose};
-use block::Block;
+use block::{Block, ListOne, OneOf};
 use device_query::{DeviceQuery, DeviceState, Keycode};
 use log::LogType;
 use thirtyfour::{By, DesiredCapabilities, WebDriver, WebElement};
 use tokio;
 use tokio::process::{Child, Command};
+
+#[tokio::main]
+async fn main() {
+    let config = Config { headless: true };
+
+    kill_old_chrome().await;
+
+    let mut child = run_chromedriver();
+
+    // Set up WebDriver
+    let mut caps = DesiredCapabilities::chrome();
+    caps.add_chrome_arg("--disk-cache-size=0").unwrap();
+    caps.add_chrome_arg("--media-cache-size=0").unwrap();
+    caps.add_chrome_arg("--disable-gpu-shader-disk-cache")
+        .unwrap();
+    caps.add_chrome_arg("--user-data-dir=./user").unwrap();
+    if config.headless {
+        caps.add_chrome_arg("--headless").unwrap();
+    }
+    // caps.set_binary("../prepare/prepare_cache/chromedriver")
+    //     .unwrap();
+
+    let driver = WebDriver::new("http://localhost:9518", caps).await.unwrap();
+
+    // Navigate to the Feishu document
+    driver
+        .goto("https://qcnoe3hd7k5c.feishu.cn/wiki/FSe2wulLqiHcI8kgCqIcmmlknnh")
+        .await
+        .unwrap();
+
+    // Wait for page to load
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    // Create output file
+    let mut outmd = File::create("out.md").unwrap();
+
+    // Track processed elements and images
+    let mut appear: HashMap<String, bool> = HashMap::new();
+    let mut appear_img: HashMap<String, i32> = HashMap::new();
+
+    // Setup Ctrl+C detection
+    let running = Arc::new(AtomicBool::new(true));
+
+    poll_keys::start_poll_keys(running.clone());
+
+    let block_elems = collect_blocks(&running, &driver).await;
+
+    // for a elem, child of whose child should be removed from its children
+
+    // print each block children
+    let mut max_id = 0;
+    for (id, (elem, child_ids)) in block_elems.iter() {
+        println!("block {} has children: {:?}", id, child_ids);
+        if *id > max_id {
+            max_id = *id;
+        }
+    }
+
+    for id in 0..max_id {
+        if !block_elems.contains_key(&id) {
+            println!("block {} not found", id);
+        }
+    }
+
+    // print max_id
+
+    // .into_iter()
+    // .map(|v| RefCell::new(v))
+    // .collect();
+
+    // // scan blocks, if block has the child block, add them to child list
+    // for elem_id_elem in block_elems.iter() {
+    //     let elem_id = elem_id_elem.borrow().0;
+
+    //     // elem > list-wrapper > list-children > render-unit-wrapper > block
+
+    // }
+
+    // loop {
+    //     tokio::time::sleep(Duration::from_secs(1000)).await;
+    // }
+
+    // wait for ctrl+c
+    tokio::signal::ctrl_c().await.unwrap();
+
+    // Close the driver
+    driver.quit().await.unwrap();
+
+    child.kill().await.unwrap();
+}
 
 /// A wrapper around WebElement that includes its block ID for ordering
 
@@ -120,6 +210,12 @@ async fn collect_blocks(
     // Initialize element map
     let mut element_map = find_enabled_element(&driver).await;
 
+    struct InternalBlockPart {
+        content: OneOf<Block, ListOne>,
+        children: Vec<BlockId>,
+    }
+    let mut blockid_2_block_or_listone: BTreeMap<BlockId, InternalBlockPart> = BTreeMap::new();
+
     while running.load(Ordering::SeqCst) && !element_map.is_empty() {
         let mut skip_times = 0;
         let initial_map_size = element_map.len();
@@ -158,7 +254,10 @@ async fn collect_blocks(
             println!("\n=============one element=============");
             println!("id: {}", id);
             println!("text: {}", e.text().await.unwrap());
-            Block::new_by_element(&driver, "one", &e).await;
+            let Some(blockpart) = Block::new_by_element(&driver, "one", &e).await else {
+                println!("unrecognized element");
+                continue;
+            };
 
             let child_elem_ids = {
                 let child_elems = e.find_all(By::Css(".block")).await;
@@ -206,6 +305,14 @@ async fn collect_blocks(
                 }
             };
 
+            blockid_2_block_or_listone.insert(
+                id,
+                InternalBlockPart {
+                    content: blockpart,
+                    children: child_elem_ids,
+                },
+            );
+
             println!("elem {} contains children: {:?}", id, child_elem_ids);
             tokio::time::sleep(Duration::from_millis(1000)).await;
 
@@ -232,102 +339,21 @@ async fn collect_blocks(
         }
     }
 
+    // all scaned to blockid_2_block_or_listone
+    // for each blockid_2_block_or_listone, construct real block
+    // - we use a root_list option to record list in root
+    // - we use a ctx stack, each with (parent id, unmatched children) to record recent unfilled parent(children are not all inserted)
+    // - for one block or diff type listone, we always first try take the root_list and add it before handling current
+    // - for one block, if it's not in ctx children, common just add to vec,
+    // - for listone, add to or create root_list
+    // - for one block or list one, if it's in ctx's children, remove it in ctx unmatched children and add to parent sub (parent is supposed to be a Block::List)
+
     println!("doc is all dump");
     collected_blocks
 }
 
 struct Config {
     headless: bool,
-}
-
-#[tokio::main]
-async fn main() {
-    let config = Config { headless: true };
-
-    kill_old_chrome().await;
-
-    let mut child = run_chromedriver();
-
-    // Set up WebDriver
-    let mut caps = DesiredCapabilities::chrome();
-    caps.add_chrome_arg("--disk-cache-size=0").unwrap();
-    caps.add_chrome_arg("--media-cache-size=0").unwrap();
-    caps.add_chrome_arg("--disable-gpu-shader-disk-cache")
-        .unwrap();
-    caps.add_chrome_arg("--user-data-dir=./user").unwrap();
-    if config.headless {
-        caps.add_chrome_arg("--headless").unwrap();
-    }
-    // caps.set_binary("../prepare/prepare_cache/chromedriver")
-    //     .unwrap();
-
-    let driver = WebDriver::new("http://localhost:9518", caps).await.unwrap();
-
-    // Navigate to the Feishu document
-    driver
-        .goto("https://qcnoe3hd7k5c.feishu.cn/wiki/FSe2wulLqiHcI8kgCqIcmmlknnh")
-        .await
-        .unwrap();
-
-    // Wait for page to load
-    tokio::time::sleep(Duration::from_secs(1)).await;
-
-    // Create output file
-    let mut outmd = File::create("out.md").unwrap();
-
-    // Track processed elements and images
-    let mut appear: HashMap<String, bool> = HashMap::new();
-    let mut appear_img: HashMap<String, i32> = HashMap::new();
-
-    // Setup Ctrl+C detection
-    let running = Arc::new(AtomicBool::new(true));
-
-    poll_keys::start_poll_keys(running.clone());
-
-    let block_elems = collect_blocks(&running, &driver).await;
-
-    // for a elem, child of whose child should be removed from its children
-
-    // print each block children
-    let mut max_id = 0;
-    for (id, (elem, child_ids)) in block_elems.iter() {
-        println!("block {} has children: {:?}", id, child_ids);
-        if *id > max_id {
-            max_id = *id;
-        }
-    }
-
-    for id in 0..max_id {
-        if !block_elems.contains_key(&id) {
-            println!("block {} not found", id);
-        }
-    }
-
-    // print max_id
-
-    // .into_iter()
-    // .map(|v| RefCell::new(v))
-    // .collect();
-
-    // // scan blocks, if block has the child block, add them to child list
-    // for elem_id_elem in block_elems.iter() {
-    //     let elem_id = elem_id_elem.borrow().0;
-
-    //     // elem > list-wrapper > list-children > render-unit-wrapper > block
-
-    // }
-
-    // loop {
-    //     tokio::time::sleep(Duration::from_secs(1000)).await;
-    // }
-
-    // wait for ctrl+c
-    tokio::signal::ctrl_c().await.unwrap();
-
-    // Close the driver
-    driver.quit().await.unwrap();
-
-    child.kill().await.unwrap();
 }
 
 async fn kill_old_chrome() {

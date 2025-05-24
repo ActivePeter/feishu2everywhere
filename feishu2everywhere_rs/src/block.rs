@@ -456,32 +456,32 @@ impl Block {
         driver: &WebDriver,
         ctx_str: &str,
         e: &WebElement,
-    ) -> OneOf<Block, ListOne> {
+    ) -> Option<OneOf<Block, ListOne>> {
         // head case
         if let Some(block) = try_new_heading(e).await {
-            return OneOf::A(block);
+            return Some(OneOf::A(block));
         }
 
         // text case
         if let Some(block) = try_new_text(e).await {
-            return OneOf::A(block);
+            return Some(OneOf::A(block);
         }
 
         // code case
         if let Some(block) = try_new_code(e).await {
-            return OneOf::A(block);
+            return Some(OneOf::A(block);
         }
 
         // image case
         if let Some(block) = try_new_image(driver, ctx_str, e).await {
-            return OneOf::A(block);
+            return Some(OneOf::A(block);
         }
 
         // list case (todo list, ordered list, unordered list)
         if let Some(result) = try_new_list(e).await {
-            return result;
+            return Some(result);
         }
 
-        OneOf::A(Block::Text(vec![]))
+        None
     }
 }
