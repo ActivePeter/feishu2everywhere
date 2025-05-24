@@ -158,7 +158,7 @@ async fn collect_blocks(
             println!("\n=============one element=============");
             println!("id: {}", id);
             println!("text: {}", e.text().await.unwrap());
-            Block::new_by_element(&e).await;
+            Block::new_by_element(&driver, "one", &e).await;
 
             let child_elem_ids = {
                 let child_elems = e.find_all(By::Css(".block")).await;
@@ -236,8 +236,14 @@ async fn collect_blocks(
     collected_blocks
 }
 
+struct Config {
+    headless: bool,
+}
+
 #[tokio::main]
 async fn main() {
+    let config = Config { headless: true };
+
     kill_old_chrome().await;
 
     let mut child = run_chromedriver();
@@ -249,6 +255,9 @@ async fn main() {
     caps.add_chrome_arg("--disable-gpu-shader-disk-cache")
         .unwrap();
     caps.add_chrome_arg("--user-data-dir=./user").unwrap();
+    if config.headless {
+        caps.add_chrome_arg("--headless").unwrap();
+    }
     // caps.set_binary("../prepare/prepare_cache/chromedriver")
     //     .unwrap();
 
@@ -256,7 +265,7 @@ async fn main() {
 
     // Navigate to the Feishu document
     driver
-        .goto("https://fvd360f8oos.feishu.cn/docx/Q3c6dJG5Go3ov6xXofZcGp43nfb")
+        .goto("https://qcnoe3hd7k5c.feishu.cn/wiki/FSe2wulLqiHcI8kgCqIcmmlknnh")
         .await
         .unwrap();
 

@@ -11,4 +11,5 @@ device_query = "3.0.1"
 async-recursion = "0.1.0"
 crossterm = "0.29.0"
 chrono = "0.4.31"
+sha2 = "0.10.9"
 # use async_recursion::async_recursion;b

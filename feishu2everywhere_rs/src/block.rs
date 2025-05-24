@@ -1,8 +1,12 @@
 use std::path::PathBuf;
 
-use thirtyfour::{By, WebElement};
+use base64;
+use sha2::{Digest, Sha256};
+use thirtyfour::{By, WebDriver, WebElement};
 
 use crate::{BlockId, webelement_ext::WebElementExt};
+
+const IMAGE_CACHE_DIR: &str = "image_cache";
 
 #[derive(Debug, Default)]
 pub struct TextSlice {
@@ -21,6 +25,7 @@ pub struct TextSlice {
 
 #[derive(Debug)]
 pub struct ListOne {
+    done: Option<bool>,
     headline: Vec<TextSlice>,
     following: Vec<Block>,
 }
@@ -69,6 +74,13 @@ impl HeadLevel {
 }
 
 #[derive(Debug)]
+pub enum ListType {
+    Ordered,
+    Unordered,
+    Task,
+}
+
+#[derive(Debug)]
 pub enum Block {
     /// markdown format
     Text(Vec<TextSlice>),
@@ -77,7 +89,7 @@ pub enum Block {
         head_level: HeadLevel,
     },
     List {
-        ordered: bool,
+        list_type: ListType,
         items: Vec<ListOne>,
     },
     Image {
@@ -263,27 +275,213 @@ async fn try_new_code(e: &WebElement) -> Option<Block> {
 
     println!("extracted code: {:?}", ret);
     return ret;
+}
+
+#[derive(Debug)]
+pub enum OneOf<A, B> {
+    A(A),
+    B(B),
+}
+
+async fn try_new_todo_list(e: &WebElement) -> Option<OneOf<Block, ListOne>> {
+    // the we get todo state by one of the 2 case
+    // .todo-block && .task-done (first try this)
+    // .todo-block
+
+    // Get all todo block elements
+    let todo_elems = e.get_direct_children(".todo-block").await;
+
+    // If no todo elements found, return None
+    if todo_elems.is_empty() {
+        return None;
+    }
+
+    // Check for a single todo item case
+    if todo_elems.len() == 1 {
+        let todo_elem = &todo_elems[0];
+
+        // Check if the todo item is done by looking at its class name
+        let is_done = match todo_elem.get_attribute("class").await {
+            Ok(Some(class_name)) => class_name.contains("task-done"),
+            _ => false,
+        };
+
+        let content_elems = todo_elem.find_all(By::Css(".ace-line")).await.unwrap();
+        if !content_elems.is_empty() {
+            let headline = get_text_slices_for_are_line(&content_elems[0]).await;
+            let following = vec![]; // For now, not handling nested blocks
+
+            let ret = ListOne {
+                done: Some(is_done),
+                headline,
+                following,
+            };
+
+            println!("extracted todo list: {:?}", ret);
+            // Return a single ListOne item
+            return Some(OneOf::B(ret));
+        } else {
+            panic!("todo block should have content");
+        }
+    } else {
+        panic!("one todo list block should have only one item");
+    }
+}
+
+async fn try_new_common_list(e: &WebElement) -> Option<OneOf<Block, ListOne>> {
+    // get unordered by .bullet-list > .list
+    // get ordered by .ordered-list > .list
+
+    // Try to find ordered list elements
+    let ordered_elems = e.get_direct_children(".ordered-list > .list").await;
+    let is_ordered = !ordered_elems.is_empty();
+
+    // Try to find unordered list elements
+    let unordered_elems = e.get_direct_children(".bullet-list > .list").await;
+
+    // Determine which list type we found
+    let (list_elem, list_type) = if is_ordered {
+        (&ordered_elems[0], ListType::Ordered)
+    } else if !unordered_elems.is_empty() {
+        (&unordered_elems[0], ListType::Unordered)
+    } else {
+        println!("no list found");
+        return None;
+    };
+
+    // Get the content for the list item
+    let ace_lines = list_elem.find_all(By::Css(".ace-line")).await.unwrap();
+    assert!(!ace_lines.is_empty());
+    // if ace_lines.is_empty() {
+    //     return None;
+    // }
+
+    // Extract text for the first line
+    let headline = get_text_slices_for_are_line(&ace_lines[0]).await;
+    let following = vec![]; // For now, not handling nested blocks
+
+    let ret = ListOne {
+        done: None, // Not a todo list
+        headline,
+        following,
+    };
+
+    println!("extracted common list item: {:?}", ret);
+    return Some(OneOf::B(ret));
+}
+
+/// we only prepare the head of list,
+/// the following items will be processed when all Blocks are collected
+/// and will be contructed by pre-known dependency of elements
+async fn try_new_list(e: &WebElement) -> Option<OneOf<Block, ListOne>> {
+    // First try to extract todo list
+    if let Some(result) = try_new_todo_list(e).await {
+        // Already has the correct return type, just pass it through
+        return Some(result);
+    }
+
+    // Then try to extract common list (ordered or unordered)
+    if let Some(result) = try_new_common_list(e).await {
+        // Already has the correct return type, just pass it through
+        return Some(result);
+    }
 
     None
 }
 
+async fn try_new_image(driver: &WebDriver, ctx_str: &str, e: &WebElement) -> Option<Block> {
+    // direct: .block-comment > .docx-block-loading-container
+    let container = e
+        .get_direct_children(".block-comment > .docx-block-loading-container")
+        .await;
+    if container.is_empty() {
+        return None;
+    }
+
+    // find_all: canvas
+    let canvas_result = e.find_all(By::Css("canvas")).await;
+    if canvas_result.is_err() || canvas_result.as_ref().unwrap().is_empty() {
+        return None;
+    }
+
+    let canvas = &canvas_result.unwrap()[0];
+
+    //  # get the canvas as a PNG base64 string
+    //  canvas_base64 = driver.execute_script("return arguments[0].toDataURL('image/png').substring(21);", canvas)
+    //  # decode
+    //  canvas_png = base64.b64decode(canvas_base64)
+
+    let canvas_base64 = unsafe {
+        driver
+            .execute(
+                "return arguments[0].toDataURL('image/png').substring(22);",
+                vec![canvas.to_json().unwrap()],
+            )
+            .await
+            .unwrap()
+    };
+    let canvas_base64 = canvas_base64.json().as_str().unwrap();
+    println!("canvas_base64: {}", canvas_base64);
+    let canvas_png = base64::decode(canvas_base64).unwrap();
+
+    // Create a hash from the image data for a unique filename
+    let mut hasher = Sha256::new();
+    hasher.update(&canvas_png);
+    let hash = format!("{:x}", unsafe { hasher.finalize() });
+
+    // save to {IMAGE_CACHE_DIR}/{ctx_str}/{SUMMARY_HASH}.png
+    let cache_dir = std::path::Path::new(IMAGE_CACHE_DIR).join(ctx_str);
+    if !cache_dir.exists() {
+        if let Err(e) = std::fs::create_dir_all(&cache_dir) {
+            println!("Failed to create directory: {:?}", e);
+            return None;
+        }
+    }
+
+    let image_path = cache_dir.join(format!("{}.png", &hash[0..16]));
+    if let Err(e) = std::fs::write(&image_path, canvas_png) {
+        println!("Failed to write image: {:?}", e);
+        return None;
+    }
+
+    println!("Saved image to: {:?}", image_path);
+
+    Some(Block::Image {
+        cached_path: image_path,
+    })
+}
+
 impl Block {
-    pub async fn new_by_element(e: &WebElement) -> Self {
+    pub async fn new_by_element(
+        driver: &WebDriver,
+        ctx_str: &str,
+        e: &WebElement,
+    ) -> OneOf<Block, ListOne> {
         // head case
         if let Some(block) = try_new_heading(e).await {
-            return block;
+            return OneOf::A(block);
         }
 
         // text case
         if let Some(block) = try_new_text(e).await {
-            return block;
+            return OneOf::A(block);
         }
 
         // code case
         if let Some(block) = try_new_code(e).await {
-            return block;
+            return OneOf::A(block);
         }
 
-        Block::Text(vec![])
+        // image case
+        if let Some(block) = try_new_image(driver, ctx_str, e).await {
+            return OneOf::A(block);
+        }
+
+        // list case (todo list, ordered list, unordered list)
+        if let Some(result) = try_new_list(e).await {
+            return result;
+        }
+
+        OneOf::A(Block::Text(vec![]))
     }
 }
