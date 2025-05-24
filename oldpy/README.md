@@ -1,0 +1,1 @@
+Run python with uv run $SCRIPT_NAME  

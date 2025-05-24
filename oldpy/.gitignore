@@ -1,4 +1,4 @@
-.venv
-target
+canvas*
+out.md
 user
 prepare_cache
