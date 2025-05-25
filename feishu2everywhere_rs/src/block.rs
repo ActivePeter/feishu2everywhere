@@ -283,7 +283,8 @@ pub enum OneOf<A, B> {
     B(B),
 }
 
-impl<A: Clone, B: Clone> Clone for OneOf<A, B> {
+// Make B generic for Clone as well
+impl<A: Clone, B_ITEM: Clone> Clone for OneOf<A, B_ITEM> {
     fn clone(&self) -> Self {
         match self {
             OneOf::A(a) => OneOf::A(a.clone()),
@@ -292,7 +293,7 @@ impl<A: Clone, B: Clone> Clone for OneOf<A, B> {
     }
 }
 
-async fn try_new_todo_list(e: &WebElement) -> Option<OneOf<Block, ListOne>> {
+async fn try_new_todo_list(e: &WebElement) -> Option<OneOf<Block, (ListType, ListOne)>> {
     // the we get todo state by one of the 2 case
     // .todo-block && .task-done (first try this)
     // .todo-block
@@ -327,8 +328,8 @@ async fn try_new_todo_list(e: &WebElement) -> Option<OneOf<Block, ListOne>> {
             };
 
             println!("extracted todo list: {:?}", ret);
-            // Return a single ListOne item
-            return Some(OneOf::B(ret));
+            // Return a single ListOne item, now with ListType
+            return Some(OneOf::B((ListType::Task, ret)));
         } else {
             panic!("todo block should have content");
         }
@@ -337,7 +338,7 @@ async fn try_new_todo_list(e: &WebElement) -> Option<OneOf<Block, ListOne>> {
     }
 }
 
-async fn try_new_common_list(e: &WebElement) -> Option<OneOf<Block, ListOne>> {
+async fn try_new_common_list(e: &WebElement) -> Option<OneOf<Block, (ListType, ListOne)>> {
     // get unordered by .bullet-list > .list
     // get ordered by .ordered-list > .list
 
@@ -349,7 +350,7 @@ async fn try_new_common_list(e: &WebElement) -> Option<OneOf<Block, ListOne>> {
     let unordered_elems = e.get_direct_children(".bullet-list > .list").await;
 
     // Determine which list type we found
-    let (list_elem, list_type) = if is_ordered {
+    let (list_elem, determined_list_type) = if is_ordered {
         (&ordered_elems[0], ListType::Ordered)
     } else if !unordered_elems.is_empty() {
         (&unordered_elems[0], ListType::Unordered)
@@ -376,13 +377,13 @@ async fn try_new_common_list(e: &WebElement) -> Option<OneOf<Block, ListOne>> {
     };
 
     println!("extracted common list item: {:?}", ret);
-    return Some(OneOf::B(ret));
+    return Some(OneOf::B((determined_list_type, ret)));
 }
 
 /// we only prepare the head of list,
 /// the following items will be processed when all Blocks are collected
 /// and will be contructed by pre-known dependency of elements
-async fn try_new_list(e: &WebElement) -> Option<OneOf<Block, ListOne>> {
+async fn try_new_list(e: &WebElement) -> Option<OneOf<Block, (ListType, ListOne)>> {
     // First try to extract todo list
     if let Some(result) = try_new_todo_list(e).await {
         // Already has the correct return type, just pass it through
@@ -465,7 +466,7 @@ impl Block {
         driver: &WebDriver,
         ctx_str: &str,
         e: &WebElement,
-    ) -> Option<OneOf<Block, ListOne>> {
+    ) -> Option<OneOf<Block, (ListType, ListOne)>> {
         // head case
         if let Some(block) = try_new_heading(e).await {
             return Some(OneOf::A(block));

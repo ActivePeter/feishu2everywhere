@@ -202,7 +202,7 @@ pub type BlockId = i32;
 // Define InternalBlockPart structure at the module level
 #[derive(Debug)]
 struct InternalBlockPart {
-    content: OneOf<Block, ListOne>,
+    content: OneOf<Block, (ListType, ListOne)>,
     children: Vec<BlockId>,
 }
 
@@ -359,7 +359,7 @@ async fn collect_blocks(
     fn debug_block(block: &Block, depth: usize) {
         match block {
             Block::List { list_type, items } => {
-                println!("{}list:", " ".repeat(depth));
+                println!("{}list {:?}", " ".repeat(depth), list_type);
                 for item in items {
                     println!("{}- {:?}", " ".repeat(depth), item.get_headline());
                     for child in item.get_following() {
@@ -740,31 +740,52 @@ fn construct_blocks(
             let parent_block = parent_block.as_mut().unwrap();
 
             let parent_listone = match &mut parent_block.content {
-                OneOf::B(listone) => listone,
-                _ => panic!("parent is not listone"),
+                OneOf::B((_, listone)) => listone,
+                _ => panic!("parent is not listone-like"),
             };
 
             match take_cur_block.content {
                 OneOf::A(block) => {
                     parent_listone.get_following_mut().push(block);
                 }
-                OneOf::B(listone) => {
-                    fn push_new_listone_to_parent(parent_listone: &mut ListOne, listone: ListOne) {
-                        parent_listone.get_following_mut().push(Block::List {
-                            list_type: ListType::Unordered,
-                            items: vec![listone],
-                        });
+                OneOf::B((child_list_type, child_list_one)) => {
+                    fn push_new_list_to_parent_following(
+                        parent_listone: &mut ListOne,
+                        cl_type: ListType,
+                        cl_one: ListOne,
+                    ) {
+                        unsafe {
+                            parent_listone.get_following_mut().push(Block::List {
+                                list_type: cl_type,
+                                items: vec![cl_one],
+                            });
+                        }
                     }
 
-                    if let Some(last) = parent_listone.get_following_mut().iter_mut().last() {
-                        match last {
-                            Block::List { list_type, items } => {
-                                items.push(listone);
+                    if let Some(last_block_in_parent_following) =
+                        parent_listone.get_following_mut().iter_mut().last()
+                    {
+                        match last_block_in_parent_following {
+                            Block::List {
+                                list_type: parent_inner_list_type,
+                                items: parent_inner_items,
+                            } if *parent_inner_list_type == child_list_type => {
+                                parent_inner_items.push(child_list_one);
                             }
-                            _ => push_new_listone_to_parent(parent_listone, listone),
+                            _ => {
+                                push_new_list_to_parent_following(
+                                    parent_listone,
+                                    child_list_type,
+                                    child_list_one,
+                                );
+                            }
                         }
                     } else {
-                        push_new_listone_to_parent(parent_listone, listone)
+                        push_new_list_to_parent_following(
+                            parent_listone,
+                            child_list_type,
+                            child_list_one,
+                        );
                     }
                 }
             };
@@ -777,17 +798,16 @@ fn construct_blocks(
 
     let mut result_blocks = mutable_blocks
         .into_iter()
-        .filter_map(|(id, block)| {
-            if let Some(block) = block.borrow_mut().take() {
-                match block.content {
-                    OneOf::A(block) => Some((id, block)),
-                    OneOf::B(listone) => Some((
-                        id,
+        .filter_map(|(id, block_cell)| {
+            if let Some(internal_block_part) = block_cell.borrow_mut().take() {
+                match internal_block_part.content {
+                    OneOf::A(block_content) => Some((id, block_content)),
+                    OneOf::B((actual_list_type, list_one_instance)) => Some((id, unsafe {
                         Block::List {
-                            list_type: ListType::Unordered,
-                            items: vec![listone],
-                        },
-                    )),
+                            list_type: actual_list_type,
+                            items: vec![list_one_instance],
+                        }
+                    })),
                 }
             } else {
                 None
