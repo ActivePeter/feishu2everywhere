@@ -8,7 +8,7 @@ use crate::{BlockId, webelement_ext::WebElementExt};
 
 const IMAGE_CACHE_DIR: &str = "image_cache";
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct TextSlice {
     text: String,
     is_bold: bool,
@@ -23,14 +23,14 @@ pub struct TextSlice {
 //     shown_name: String,
 // }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ListOne {
     done: Option<bool>,
     headline: Vec<TextSlice>,
     following: Vec<Block>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum HeadLevel {
     H1,
     H2,
@@ -73,14 +73,14 @@ impl HeadLevel {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ListType {
     Ordered,
     Unordered,
     Task,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Block {
     /// markdown format
     Text(Vec<TextSlice>),
@@ -283,6 +283,15 @@ pub enum OneOf<A, B> {
     B(B),
 }
 
+impl<A: Clone, B: Clone> Clone for OneOf<A, B> {
+    fn clone(&self) -> Self {
+        match self {
+            OneOf::A(a) => OneOf::A(a.clone()),
+            OneOf::B(b) => OneOf::B(b.clone()),
+        }
+    }
+}
+
 async fn try_new_todo_list(e: &WebElement) -> Option<OneOf<Block, ListOne>> {
     // the we get todo state by one of the 2 case
     // .todo-block && .task-done (first try this)
@@ -464,17 +473,17 @@ impl Block {
 
         // text case
         if let Some(block) = try_new_text(e).await {
-            return Some(OneOf::A(block);
+            return Some(OneOf::A(block));
         }
 
         // code case
         if let Some(block) = try_new_code(e).await {
-            return Some(OneOf::A(block);
+            return Some(OneOf::A(block));
         }
 
         // image case
         if let Some(block) = try_new_image(driver, ctx_str, e).await {
-            return Some(OneOf::A(block);
+            return Some(OneOf::A(block));
         }
 
         // list case (todo list, ordered list, unordered list)
@@ -483,5 +492,31 @@ impl Block {
         }
 
         None
+    }
+}
+
+impl ListOne {
+    pub fn new(headline: Vec<TextSlice>, done: Option<bool>, following: Vec<Block>) -> Self {
+        Self {
+            headline,
+            done,
+            following,
+        }
+    }
+
+    pub fn get_headline(&self) -> &Vec<TextSlice> {
+        &self.headline
+    }
+
+    pub fn get_done(&self) -> &Option<bool> {
+        &self.done
+    }
+
+    pub fn get_following(&self) -> &Vec<Block> {
+        &self.following
+    }
+
+    pub fn get_following_mut(&mut self) -> &mut Vec<Block> {
+        &mut self.following
     }
 }

@@ -3,11 +3,13 @@ mod log;
 mod poll_keys;
 mod webelement_ext;
 
+use std::borrow::BorrowMut;
 use std::cell::RefCell;
 use std::cmp::{Ord, Ordering as CmpOrdering, PartialOrd};
 use std::collections::{BTreeMap, BinaryHeap, HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::Write;
+use std::ops::Mul;
 use std::process::Stdio;
 use std::sync::{
     Arc,
@@ -18,7 +20,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use async_recursion::async_recursion;
 use base64::{Engine as _, engine::general_purpose};
-use block::{Block, ListOne, OneOf};
+use block::{Block, ListOne, ListType, OneOf};
 use device_query::{DeviceQuery, DeviceState, Keycode};
 use log::LogType;
 use thirtyfour::{By, DesiredCapabilities, WebDriver, WebElement};
@@ -27,7 +29,7 @@ use tokio::process::{Child, Command};
 
 #[tokio::main]
 async fn main() {
-    let config = Config { headless: true };
+    let config = Config { headless: false };
 
     kill_old_chrome().await;
 
@@ -197,6 +199,13 @@ async fn find_child_elements(driver: &WebDriver, element: &WebElement) -> Vec<We
 
 pub type BlockId = i32;
 
+// Define InternalBlockPart structure at the module level
+#[derive(Debug)]
+struct InternalBlockPart {
+    content: OneOf<Block, ListOne>,
+    children: Vec<BlockId>,
+}
+
 /// return blockid -> (webelement, children ids)
 async fn collect_blocks(
     running: &AtomicBool,
@@ -210,10 +219,7 @@ async fn collect_blocks(
     // Initialize element map
     let mut element_map = find_enabled_element(&driver).await;
 
-    struct InternalBlockPart {
-        content: OneOf<Block, ListOne>,
-        children: Vec<BlockId>,
-    }
+    // Define InternalBlockPart structure
     let mut blockid_2_block_or_listone: BTreeMap<BlockId, InternalBlockPart> = BTreeMap::new();
 
     while running.load(Ordering::SeqCst) && !element_map.is_empty() {
@@ -309,7 +315,7 @@ async fn collect_blocks(
                 id,
                 InternalBlockPart {
                     content: blockpart,
-                    children: child_elem_ids,
+                    children: child_elem_ids.clone(),
                 },
             );
 
@@ -347,6 +353,30 @@ async fn collect_blocks(
     // - for one block, if it's not in ctx children, common just add to vec,
     // - for listone, add to or create root_list
     // - for one block or list one, if it's in ctx's children, remove it in ctx unmatched children and add to parent sub (parent is supposed to be a Block::List)
+    let final_blocks = construct_blocks(blockid_2_block_or_listone);
+
+    println!("final_blocks:");
+    fn debug_block(block: &Block, depth: usize) {
+        match block {
+            Block::List { list_type, items } => {
+                println!("{}list:", " ".repeat(depth));
+                for item in items {
+                    println!("{}- {:?}", " ".repeat(depth), item.get_headline());
+                    for child in item.get_following() {
+                        debug_block(child, depth + 2);
+                    }
+                    println!("");
+                }
+            }
+            block => {
+                println!("{}{:?}\n", " ".repeat(depth), block);
+            }
+        }
+    }
+    // fn dfs
+    for (id, block) in &final_blocks {
+        debug_block(block, 0);
+    }
 
     println!("doc is all dump");
     collected_blocks
@@ -653,3 +683,130 @@ async fn scroll(
 //     println!("collect_elements {}", newcnt);
 //     Ok(newcnt)
 // }
+
+/// Process blocks and construct hierarchical structure
+/// 将构建过程分为三个阶段:
+/// 1. 记录父子关系阶段：记录每个元素的父亲Some(id)，没有父亲就是None
+/// 2. 倒序构建阶段：
+///    - 如果是listone且父亲item尾巴是同类listone，就加入该listone的following
+///    - 如果是listone且父亲item尾巴不是同类，就new一个Block::list
+/// 3. 反转following阶段：把每个listone的following都reverse，因为是倒序加入的
+fn construct_blocks(
+    blockid_2_block_or_listone: BTreeMap<BlockId, InternalBlockPart>,
+) -> BTreeMap<BlockId, Block> {
+    // 将输入转换为可变的结构
+    let mut mutable_blocks: BTreeMap<BlockId, RefCell<Option<InternalBlockPart>>> = BTreeMap::new();
+
+    // 直接移动原始数据到可变结构
+    for (id, block_part) in blockid_2_block_or_listone {
+        mutable_blocks.insert(id, RefCell::new(Some(block_part)));
+    }
+
+    // 第一阶段：记录父子关系
+    let parent_map = {
+        let mut parent_map: BTreeMap<BlockId, Option<BlockId>> = BTreeMap::new();
+
+        // 初始化所有块的父节点为None
+        for (block_id, _) in &mutable_blocks {
+            parent_map.insert(*block_id, None);
+        }
+
+        // 遍历记录父子关系
+        for (block_id, block_part_cell) in &mutable_blocks {
+            if let Some(block_part) = &*block_part_cell.borrow() {
+                for child_id in &block_part.children {
+                    if parent_map.contains_key(child_id) {
+                        parent_map.insert(*child_id, Some(*block_id));
+                        println!("Set block {} parent to {}", child_id, block_id);
+                    }
+                }
+            }
+        }
+
+        // 打印父子关系供调试
+        println!("Parent relationships:");
+        for (id, parent_id) in &parent_map {
+            println!("Block {} has parent: {:?}", id, parent_id);
+        }
+        parent_map
+    };
+
+    // 第二阶段：倒序构建
+    for (id, block_part_cell) in mutable_blocks.iter().rev() {
+        if let Some(parent) = parent_map.get(id).unwrap() {
+            let take_cur_block = block_part_cell.borrow_mut().take().unwrap();
+            // 如果parent是listone，且block_part_cell是同类listone，就加入该listone的following
+            let mut parent_block = mutable_blocks.get(parent).unwrap().borrow_mut();
+            let parent_block = parent_block.as_mut().unwrap();
+
+            let parent_listone = match &mut parent_block.content {
+                OneOf::B(listone) => listone,
+                _ => panic!("parent is not listone"),
+            };
+
+            match take_cur_block.content {
+                OneOf::A(block) => {
+                    parent_listone.get_following_mut().push(block);
+                }
+                OneOf::B(listone) => {
+                    fn push_new_listone_to_parent(parent_listone: &mut ListOne, listone: ListOne) {
+                        parent_listone.get_following_mut().push(Block::List {
+                            list_type: ListType::Unordered,
+                            items: vec![listone],
+                        });
+                    }
+
+                    if let Some(last) = parent_listone.get_following_mut().iter_mut().last() {
+                        match last {
+                            Block::List { list_type, items } => {
+                                items.push(listone);
+                            }
+                            _ => push_new_listone_to_parent(parent_listone, listone),
+                        }
+                    } else {
+                        push_new_listone_to_parent(parent_listone, listone)
+                    }
+                }
+            };
+
+            // listone
+            //     .get_following_mut()
+            //     .push();
+        }
+    }
+
+    let mut result_blocks = mutable_blocks
+        .into_iter()
+        .filter_map(|(id, block)| {
+            if let Some(block) = block.borrow_mut().take() {
+                match block.content {
+                    OneOf::A(block) => Some((id, block)),
+                    OneOf::B(listone) => Some((
+                        id,
+                        Block::List {
+                            list_type: ListType::Unordered,
+                            items: vec![listone],
+                        },
+                    )),
+                }
+            } else {
+                None
+            }
+        })
+        .collect::<BTreeMap<_, _>>();
+
+    // 第三阶段：反转following
+    // 由于我们直接修改了原始结构，需要反转所有ListOne的following
+    {
+        for (_, block) in &mut result_blocks {
+            if let Block::List { items, .. } = block {
+                for item in items {
+                    let following = item.get_following_mut();
+                    following.reverse();
+                }
+            }
+        }
+    }
+
+    result_blocks
+}
