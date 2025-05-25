@@ -73,7 +73,7 @@ impl HeadLevel {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ListType {
     Ordered,
     Unordered,

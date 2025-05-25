@@ -818,12 +818,102 @@ fn construct_blocks(
     // 第三阶段：反转following
     // 由于我们直接修改了原始结构，需要反转所有ListOne的following
     {
-        for (_, block) in &mut result_blocks {
+        fn reverse_recursive(block: &mut Block) {
             if let Block::List { items, .. } = block {
+                // Reverse the order of items within the current list first
+                items.reverse();
+                // Then, for each item (which is a ListOne), recursively reverse its 'following' blocks
                 for item in items {
-                    let following = item.get_following_mut();
-                    following.reverse();
+                    for following_block in item.get_following_mut() {
+                        reverse_recursive(following_block);
+                    }
                 }
+            }
+        }
+        for (_, block) in &mut result_blocks {
+            reverse_recursive(block);
+        }
+    }
+
+    // Stage 4: Group consecutive root lists of the same type (User's method)
+    // Part 1: Identify groups and populate to_group
+    // to_group stores (target_block_id, Vec<source_block_ids_to_merge_and_remove>)
+    let mut to_group: Vec<(BlockId, Vec<BlockId>)> = Vec::new();
+
+    let mut current_group_target_id: Option<BlockId> = None;
+    let mut current_group_list_type: Option<ListType> = None;
+    let mut current_group_sources: Vec<BlockId> = Vec::new();
+
+    // BTreeMap iterates in key-sorted order, which is what we need for "consecutive"
+    for (id, block) in result_blocks.iter() {
+        if let Block::List { list_type, .. } = block {
+            if current_group_target_id.is_some() && current_group_list_type == Some(*list_type) {
+                // This block is part of the currently tracked group
+                current_group_sources.push(*id);
+            } else {
+                // This block starts a new group or is a different type of list.
+                // Finalize the previous group if it had sources.
+                if let Some(target_id) = current_group_target_id {
+                    if !current_group_sources.is_empty() {
+                        to_group.push((target_id, current_group_sources.clone()));
+                    }
+                }
+                // Start a new group with the current block as the target.
+                current_group_target_id = Some(*id);
+                current_group_list_type = Some(*list_type);
+                current_group_sources.clear();
+            }
+        } else {
+            // Current block is not a list. Finalize any open list group.
+            if let Some(target_id) = current_group_target_id {
+                if !current_group_sources.is_empty() {
+                    to_group.push((target_id, current_group_sources.clone()));
+                }
+            }
+            // Reset group tracking
+            current_group_target_id = None;
+            current_group_list_type = None;
+            current_group_sources.clear();
+        }
+    }
+    // After the loop, finalize the last tracked group if it exists and has sources.
+    if let Some(target_id) = current_group_target_id {
+        if !current_group_sources.is_empty() {
+            to_group.push((target_id, current_group_sources.clone()));
+        }
+    }
+
+    // Part 2: Merge based on to_group, modifying result_blocks
+    for (target_id, source_ids) in to_group {
+        // We need to get the items from source_ids first, then modify target_id,
+        // to avoid mutable borrow issues if target_id itself is a source_id (should not happen with this logic).
+        let mut items_to_add_to_target: Vec<ListOne> = Vec::new();
+
+        for source_id in &source_ids {
+            if let Some(removed_block) = result_blocks.remove(source_id) {
+                if let Block::List { items, .. } = removed_block {
+                    items_to_add_to_target.extend(items);
+                } else {
+                    panic!("source_id is not a list: {}", source_id);
+                }
+            } else {
+                panic!("source_id not found in result_blocks: {}", source_id);
+            }
+        }
+
+        if !items_to_add_to_target.is_empty() {
+            if let Some(target_block) = result_blocks.get_mut(&target_id) {
+                if let Block::List {
+                    items: target_items,
+                    ..
+                } = target_block
+                {
+                    target_items.extend(items_to_add_to_target);
+                } else {
+                    panic!("target_id is not a list: {}", target_id);
+                }
+            } else {
+                panic!("target_id not found in result_blocks: {}", target_id);
             }
         }
     }
