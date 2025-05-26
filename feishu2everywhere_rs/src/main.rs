@@ -1,6 +1,7 @@
 mod block;
 mod log;
 mod poll_keys;
+mod to_markdown;
 mod webelement_ext;
 
 use std::borrow::BorrowMut;
@@ -29,7 +30,10 @@ use tokio::process::{Child, Command};
 
 #[tokio::main]
 async fn main() {
-    let config = Config { headless: false };
+    let config = Config {
+        headless: false,
+        output_md: "out.md".to_string(),
+    };
 
     kill_old_chrome().await;
 
@@ -71,24 +75,24 @@ async fn main() {
 
     poll_keys::start_poll_keys(running.clone());
 
-    let block_elems = collect_blocks(&running, &driver).await;
+    let final_blocks = collect_blocks(&running, &driver).await;
 
     // for a elem, child of whose child should be removed from its children
 
     // print each block children
-    let mut max_id = 0;
-    for (id, (elem, child_ids)) in block_elems.iter() {
-        println!("block {} has children: {:?}", id, child_ids);
-        if *id > max_id {
-            max_id = *id;
-        }
-    }
+    // let mut max_id = 0;
+    // for (id, (elem, child_ids)) in block_elems.iter() {
+    //     println!("block {} has children: {:?}", id, child_ids);
+    //     if *id > max_id {
+    //         max_id = *id;
+    //     }
+    // }
 
-    for id in 0..max_id {
-        if !block_elems.contains_key(&id) {
-            println!("block {} not found", id);
-        }
-    }
+    // for id in 0..max_id {
+    //     if !block_elems.contains_key(&id) {
+    //         println!("block {} not found", id);
+    //     }
+    // }
 
     // print max_id
 
@@ -107,6 +111,12 @@ async fn main() {
     // loop {
     //     tokio::time::sleep(Duration::from_secs(1000)).await;
     // }
+
+    to_markdown::export_blocks_to_markdown(
+        &final_blocks.into_values().collect::<Vec<_>>(),
+        &config.output_md,
+    )
+    .unwrap();
 
     // wait for ctrl+c
     tokio::signal::ctrl_c().await.unwrap();
@@ -207,10 +217,7 @@ struct InternalBlockPart {
 }
 
 /// return blockid -> (webelement, children ids)
-async fn collect_blocks(
-    running: &AtomicBool,
-    driver: &WebDriver,
-) -> HashMap<BlockId, (WebElement, Vec<BlockId>)> {
+async fn collect_blocks(running: &AtomicBool, driver: &WebDriver) -> BTreeMap<BlockId, Block> {
     // let mut last_id = None;
     let mut all_skip_times = 0;
     let mut collected_blocks = HashMap::new();
@@ -379,11 +386,12 @@ async fn collect_blocks(
     }
 
     println!("doc is all dump");
-    collected_blocks
+    final_blocks
 }
 
 struct Config {
     headless: bool,
+    output_md: String,
 }
 
 async fn kill_old_chrome() {

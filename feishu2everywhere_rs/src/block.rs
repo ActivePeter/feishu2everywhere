@@ -10,11 +10,11 @@ const IMAGE_CACHE_DIR: &str = "image_cache";
 
 #[derive(Debug, Default, Clone)]
 pub struct TextSlice {
-    text: String,
-    is_bold: bool,
-    is_underline: bool,
-    is_code: bool,
-    link: Option<String>,
+    pub text: String,
+    pub is_bold: bool,
+    pub is_underline: bool,
+    pub is_code: bool,
+    pub link: Option<String>,
 }
 
 // #[derive(Debug, Default)]
@@ -25,9 +25,9 @@ pub struct TextSlice {
 
 #[derive(Debug, Clone)]
 pub struct ListOne {
-    done: Option<bool>,
-    headline: Vec<TextSlice>,
-    following: Vec<Block>,
+    pub done: Option<bool>,
+    pub headline: Vec<TextSlice>,
+    pub following: Vec<Block>,
 }
 
 #[derive(Debug, Clone)]
