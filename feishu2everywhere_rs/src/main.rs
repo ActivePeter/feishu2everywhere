@@ -237,6 +237,8 @@ async fn collect_blocks(running: &AtomicBool, driver: &WebDriver) -> BTreeMap<Bl
         while !element_map.is_empty() {
             // Get the first key (smallest ID)
             let id = *element_map.keys().next().unwrap();
+            // wait for element to be ready
+            tokio::time::sleep(Duration::from_millis(1000)).await;
 
             // Get and remove the element from the map
             let e = element_map.remove(&id).unwrap();
@@ -267,9 +269,11 @@ async fn collect_blocks(running: &AtomicBool, driver: &WebDriver) -> BTreeMap<Bl
             println!("\n=============one element=============");
             println!("id: {}", id);
             println!("text: {}", e.text().await.unwrap());
-            let Some(blockpart) = Block::new_by_element(&driver, "one", &e).await else {
+            let blockpart = Block::new_by_element(&driver, "one", &e).await;
+
+            if blockpart.is_none() {
                 println!("unrecognized element");
-                continue;
+                // continue;
             };
 
             let child_elem_ids = {
@@ -318,18 +322,19 @@ async fn collect_blocks(running: &AtomicBool, driver: &WebDriver) -> BTreeMap<Bl
                 }
             };
 
-            blockid_2_block_or_listone.insert(
-                id,
-                InternalBlockPart {
-                    content: blockpart,
-                    children: child_elem_ids.clone(),
-                },
-            );
+            if let Some(blockpart) = blockpart {
+                blockid_2_block_or_listone.insert(
+                    id,
+                    InternalBlockPart {
+                        content: blockpart,
+                        children: child_elem_ids.clone(),
+                    },
+                );
 
-            println!("elem {} contains children: {:?}", id, child_elem_ids);
-            tokio::time::sleep(Duration::from_millis(1000)).await;
+                println!("elem {} contains children: {:?}", id, child_elem_ids);
 
-            collected_blocks.insert(id, (e, child_elem_ids));
+                collected_blocks.insert(id, (e, child_elem_ids));
+            }
         }
 
         // If no new elements were processed in this cycle

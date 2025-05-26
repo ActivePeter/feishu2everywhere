@@ -404,35 +404,83 @@ async fn try_new_image(driver: &WebDriver, ctx_str: &str, e: &WebElement) -> Opt
     let container = e
         .get_direct_children(".block-comment > .docx-block-loading-container")
         .await;
-    if container.is_empty() {
-        return None;
-    }
 
-    // find_all: canvas
-    let canvas_result = e.find_all(By::Css("canvas")).await;
-    if canvas_result.is_err() || canvas_result.as_ref().unwrap().is_empty() {
-        return None;
-    }
+    let canvas_png = if !container.is_empty() {
+        // find_all: canvas
+        let canvas_result = e.find_all(By::Css("canvas")).await;
+        if canvas_result.is_err() || canvas_result.as_ref().unwrap().is_empty() {
+            return None;
+        }
 
-    let canvas = &canvas_result.unwrap()[0];
+        let canvas = &canvas_result.unwrap()[0];
 
-    //  # get the canvas as a PNG base64 string
-    //  canvas_base64 = driver.execute_script("return arguments[0].toDataURL('image/png').substring(21);", canvas)
-    //  # decode
-    //  canvas_png = base64.b64decode(canvas_base64)
+        //  # get the canvas as a PNG base64 string
+        //  canvas_base64 = driver.execute_script("return arguments[0].toDataURL('image/png').substring(21);", canvas)
+        //  # decode
+        //  canvas_png = base64.b64decode(canvas_base64)
 
-    let canvas_base64 = unsafe {
-        driver
-            .execute(
-                "return arguments[0].toDataURL('image/png').substring(22);",
-                vec![canvas.to_json().unwrap()],
-            )
+        let canvas_base64 = unsafe {
+            driver
+                .execute(
+                    "return arguments[0].toDataURL('image/png').substring(22);",
+                    vec![canvas.to_json().unwrap()],
+                )
+                .await
+                .unwrap()
+        };
+        let canvas_base64 = canvas_base64.json().as_str().unwrap();
+        println!("canvas_base64: {}", canvas_base64);
+        let canvas_png = base64::decode(canvas_base64).unwrap();
+        canvas_png
+    } else {
+        if e.class_name()
             .await
             .unwrap()
+            .unwrap()
+            .contains("docx-image-block")
+        {
+            // find_all img
+            let img_result = e.find_all(By::Css("img")).await;
+            if img_result.is_err() || img_result.as_ref().unwrap().is_empty() {
+                return None;
+            }
+            let img = &img_result.unwrap()[0];
+
+            // execute script
+            //  const img = arguments[0];
+            //  const canvas = document.createElement('canvas');
+            //  canvas.width = img.naturalWidth;
+            //  canvas.height = img.naturalHeight;
+            //  const ctx = canvas.getContext('2d');
+            //  ctx.drawImage(img, 0, 0);
+            //  return canvas.toDataURL();
+            let canvas_base64 = unsafe {
+                driver
+                    .execute(
+                        "
+                        const img = arguments[0];
+                        const canvas = document.createElement('canvas');
+                        canvas.width = img.naturalWidth;
+                        canvas.height = img.naturalHeight;
+                        const ctx = canvas.getContext('2d');
+                        ctx.drawImage(img, 0, 0);
+                        return canvas.toDataURL('image/png').substring(22);
+                        ",
+                        vec![img.to_json().unwrap()],
+                    )
+                    .await
+                    .unwrap()
+            };
+            let canvas_base64 = canvas_base64.json().as_str().unwrap();
+            let canvas_png = base64::decode(canvas_base64).unwrap();
+            canvas_png
+            // let img_url = img.get_attribute("src").await.unwrap().unwrap();
+            // let img_data = reqwest::get(img_url).await.unwrap().bytes().await.unwrap();
+            // img_data.to_vec()
+        } else {
+            return None;
+        }
     };
-    let canvas_base64 = canvas_base64.json().as_str().unwrap();
-    println!("canvas_base64: {}", canvas_base64);
-    let canvas_png = base64::decode(canvas_base64).unwrap();
 
     // Create a hash from the image data for a unique filename
     let mut hasher = Sha256::new();
